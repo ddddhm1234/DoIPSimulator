@@ -1,6 +1,6 @@
 import socket
 import time
-from typing import Tuple
+from typing import Tuple, Callable
 import scapy.contrib.automotive.doip
 from scapy.supersocket import StreamSocket
 from scapy.contrib.automotive import doip
@@ -401,17 +401,70 @@ class UdsOverDoIP:
         return None
 
     
-    def routing_control(self, rid: int, rc_type: int = 0x1) -> int | None:
+    def routing_control(self, rid: int, rc_type: int = 0x1, payload: bytes = b"") -> int | None:
         """$31服务封装, RoutingControl
 
         :param rid: routing identifier
         :param rc_type: 控制类型, 1表示开启, 2表示停止, 3表示请求结果, defaults to 0x1
         :return: 为 0 时表示成功, 非 0 时表示失败, 具体含义见negativeResponseCode, 为None时表示超时未收到回复
         """
-        pkt = self._uds_base_pkt / uds.UDS() / uds.UDS_RC(routineControlType=rc_type, routineIdentifier=rid)
+        pkt = self._uds_base_pkt / uds.UDS() / uds.UDS_RC(routineControlType=rc_type, routineIdentifier=rid) / payload
         
         self.__atomic_send(pkt)
         
+        deadline = time.time() + 5
+        while deadline >= time.time():
+            
+            try:
+                resp = self.socket.recv()
+            except TimeoutError:
+                pass
+            
+            if resp is None:
+                continue
+            
+            if resp.haslayer(uds.UDS_RCPR):
+                return 0x0
+            elif resp.haslayer(uds.UDS_NR):
+                return resp.negativeResponseCode
+        
+        return None
+    
+    def erase_memory(self, addr: int, size: int, addr_len: int = 4, size_len: int = 4) -> int | None:
+        """擦除内存, 通过0xFF00 Routing完成
+        
+        :param addr: 内存地址
+        :param size: 内存长度
+        :param addr_len: 编码内存地址的字节数
+        :param size_len: 编码内存长度的字节数
+        :return: 为 0 时表示成功, 非 0 时表示失败, 为None表示超时未收到回复
+        """
+        return self.routing_control(0xFF00, 1, payload=addr.to_bytes(addr_len, "big") + size.to_bytes(size_len, "big"))
+    
+    def reprogramming(self, addr: int, size: int, data: bytes, callback: Callable, data_formatter: int = 0, addr_len: int = 4, size_len: int = 4):
+        rd_layer = uds.UDS_RD(dataFormatIdentifier=data_formatter, memorySizeLen=size_len, memoryAddressLen=addr_len)
+        if addr_len == 1:
+            rd_layer.memoryAddress1 = addr
+        elif addr_len == 2:
+            rd_layer.memoryAddress2 = addr
+        elif addr_len == 3:
+            rd_layer.memoryAddress3 = addr
+        elif addr_len == 4:
+            rd_layer.memoryAddress4 = addr
+
+        if size_len == 1:
+            rd_layer.memorySize1 = size
+        elif size_len == 2:
+            rd_layer.memorySize2 = size
+        elif size_len == 3:
+            rd_layer.memorySize3 = size
+        elif size_len == 4:
+            rd_layer.memorySize4 = size
+        
+        pkt = self._uds_base_pkt / uds.UDS() / rd_layer
+        self.__atomic_send(pkt)
+
+        block_len = -1
 
         deadline = time.time() + 5
         while deadline >= time.time():
@@ -425,9 +478,154 @@ class UdsOverDoIP:
             if resp is None:
                 continue
             
-            if resp.haslayer(uds.UDS_RCPR):
-                return 0x0
+            if resp.haslayer(uds.UDS_RDPR):
+                block_len = int.from_bytes(resp[uds.UDS_RDPR].maxNumberOfBlockLength, "big")
+                break
             elif resp.haslayer(uds.UDS_NR):
                 return resp.negativeResponseCode
         
+        if time.time() > deadline:
+            return None
+        # 进入下载请求
+        seq = 1
+
+        for i in range(0, len(data), block_len):
+            buf = data[i : min(i + block_len, len(data))]
+            pkt = self._uds_base_pkt / uds.UDS() / uds.UDS_TD(blockSequenceCounter=seq, transferRequestParameterRecord=buf)
+            self.__atomic_send(pkt)
+
+            deadline = time.time() + 5
+            while deadline >= time.time():
+                
+                try:
+                    resp = self.socket.recv()
+                except TimeoutError:
+                    pass
+                
+                if resp is None:
+                    continue
+                
+                if resp.haslayer(uds.UDS_TDPR):
+                    callback(0, seq, buf, i, block_len)
+
+                    seq += 1
+                    seq %= 0xFF
+
+                    break
+                elif resp.haslayer(uds.UDS_NR):
+                    callback(resp.negativeResponseCode, seq, buf, i, block_len)
+                    return resp.negativeResponseCode
+            
+            if time.time() >= deadline:
+                return None
+        
+        pkt = self._uds_base_pkt / uds.UDS() / uds.UDS_RTE()
+        self.__atomic_send(pkt)
+
+        deadline = time.time() + 5
+        while deadline >= time.time():
+            
+            try:
+                resp = self.socket.recv()
+            except TimeoutError:
+                pass
+            
+
+            if resp is None:
+                continue
+            
+            if resp.haslayer(uds.UDS_RTEPR) or resp[uds.UDS].service == 0x77:
+                return 0
+            elif resp.haslayer(uds.UDS_NR):
+                return resp.negativeResponseCode
+
         return None
+    
+    def get_flash(self, addr: int, size: int, callback: Callable = None, data_formatter: int = 0, addr_len: int = 4, size_len: int = 4):
+        rd_layer = uds.UDS_RU(dataFormatIdentifier=data_formatter, memorySizeLen=size_len, memoryAddressLen=addr_len)
+        if addr_len == 1:
+            rd_layer.memoryAddress1 = addr
+        elif addr_len == 2:
+            rd_layer.memoryAddress2 = addr
+        elif addr_len == 3:
+            rd_layer.memoryAddress3 = addr
+        elif addr_len == 4:
+            rd_layer.memoryAddress4 = addr
+
+        if size_len == 1:
+            rd_layer.memorySize1 = size
+        elif size_len == 2:
+            rd_layer.memorySize2 = size
+        elif size_len == 3:
+            rd_layer.memorySize3 = size
+        elif size_len == 4:
+            rd_layer.memorySize4 = size
+        
+        pkt = self._uds_base_pkt / uds.UDS() / rd_layer
+        self.__atomic_send(pkt)
+
+        block_len = -1
+
+        deadline = time.time() + 5
+        while deadline >= time.time():
+            
+            try:
+                resp = self.socket.recv()
+            except TimeoutError:
+                pass
+            
+
+            if resp is None:
+                continue
+            
+            if resp.haslayer(uds.UDS_RUPR):
+                block_len = int.from_bytes(resp[uds.UDS_RUPR].maxNumberOfBlockLength, "big")
+                break
+            elif resp.haslayer(uds.UDS_NR):
+                return resp.negativeResponseCode
+        if time.time() > deadline:
+            return None
+        # 进入上传请求
+        seq = 1
+
+        read_buf = b""
+
+        flag = True
+        while flag:
+            # 不断读取block, 直到request out of range
+            
+            pkt = self._uds_base_pkt / uds.UDS() / uds.UDS_TD(blockSequenceCounter=seq)
+
+            self.__atomic_send(pkt)
+
+            deadline = time.time() + 5
+            while deadline >= time.time():
+                try:
+                    resp = self.socket.recv()
+                except TimeoutError:
+                    pass
+                
+
+                if resp is None:
+                    continue
+                
+                if resp.haslayer(uds.UDS_TDPR):
+                    if callback is not None:
+                        callback(0, seq, resp[uds.UDS_TDPR].transferResponseParameterRecord, len(read_buf), block_len)
+                    
+                    read_buf += resp[uds.UDS_TDPR].transferResponseParameterRecord
+                    break
+                elif resp.haslayer(uds.UDS_NR):
+                    
+                    flag = False
+                    break
+
+            seq += 1
+            seq %= 0xFF
+
+        # 如果正确读取完所有内存
+        if len(read_buf) == size and resp.negativeResponseCode == 0x31:
+            return read_buf
+        else:
+            return resp.negativeResponseCode
+        

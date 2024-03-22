@@ -72,6 +72,10 @@ class DoIPNode:
         self.key_algorithm = key_algorithm
         self.pincode = pincode
         self.seed_len = seed_len
+        # 随机产生flash内存内容, 长度为0xFFFFF
+        self.flash_mem = random.randbytes(0xFFFFF)
+        # TransferData服务最大传输块长度为4096字节
+        self.flash_max_blocklen = 4096
 
         self.uds_handler = {}
         self.add_uds_handler(uds.UDS_RDBI, self.read_did)
@@ -80,22 +84,220 @@ class DoIPNode:
         self.add_uds_handler(uds.UDS_TP, self.tester_present)
         self.add_uds_handler(uds.UDS_WDBI, self.write_did)
 
+        self.add_uds_handler(uds.UDS_ER, self.ecu_reset)
         self.add_uds_handler(uds.UDS_CC, self.comm_control)
+        self.add_uds_handler(uds.UDS_CDTCS, self.control_dtcs)
+        self.add_uds_handler(uds.UDS_RD, self.request_download)
+        self.add_uds_handler(uds.UDS_TD, self.transfer_data)
+        self.add_uds_handler(uds.UDS_RTE, self.transfer_exit)
+        self.add_uds_handler(uds.UDS_RU, self.request_upload)
+        self.add_uds_handler(uds.UDS_RC, self.routing_control)
+
 
     def add_uds_handler(self, uds_service: uds.Packet, handler: Callable):
         self.uds_handler[uds_service] = handler
+        self.uds_handler[uds_service._overload_fields[uds.UDS]["service"]] = handler
 
     def remove_uds_handler(self, uds_service: uds.Packet):
         if uds_service in self.uds_handler.keys():
             del self.uds_handler[uds_service]
 
+    def ecu_reset(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        # 一直返回PositiveResponse
+        resp = self.mk_pr(pkt, uds.UDS_ERPR(resetType=pkt[2].resetType))
+        return resp
+
+    def control_dtcs(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        # 一直返回PositiveResponse
+        resp = self.mk_pr(pkt, uds.UDS_CDTCSPR(pkt[2].DTCSettingType))
+        return resp
+
     def comm_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
-        # 一直返回PositiveRespone
+        # 一直返回PositiveResponse
         resp = self.mk_pr(pkt, uds.UDS_CCPR(controlType=pkt[2].controlType))
         return resp
 
     def routing_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
-        sf = pkt[2].subFunction
+        rid = pkt[2].routineIdentifier
+        rct = pkt[2].routineControlType
+
+        if rct < 1 or rct > 3:
+            # 如果routing control type不在范围内, 返回0x12 subFunctionNotSupported
+            return self.mk_nr(pkt, 0x12)
+
+        # 内存擦除
+        if rid == 0xFF00 and rct == 1:
+            # 如果没有进入安全访问, 或者进入了安全访问但会话过期了
+            if session.get("sa_type", -1) == -1 or session.get("session_deadline", -1) < time.time():
+                # 返回 0x33 SecurityAccess Denied
+                return self.mk_nr(pkt, 0x33)
+            
+            raw = pkt[3].original
+
+            addr = int.from_bytes(raw[:4], byteorder="big")
+            size = int.from_bytes(raw[4:8], byteorder="big")
+            # 如果擦除的内存范围超过flash_mem
+            if addr + size >= len(self.flash_mem):
+                # 返回ROOR
+                return self.mk_nr(pkt, 0x72)
+
+            # 擦除内存
+            self.flash_mem = self.flash_mem[ : addr] + b"\x00" * size + self.flash_mem[addr + size : ]
+
+            return self.mk_pr(pkt, uds.UDS_RCPR(routineControlType=pkt[2].routineControlType, routineIdentifier=pkt[2].routineIdentifier))
+        # 检查刷写数据可靠性
+        elif rid == 0x0202 and rct == 1:
+            return self.mk_pr(pkt, uds.UDS_RCPR(routineControlType=pkt[2].routineControlType, routineIdentifier=pkt[2].routineIdentifier))
+        # 检查编程可靠性
+        elif rid == 0xFF01 and rct == 1:
+            return self.mk_pr(pkt, uds.UDS_RCPR(routineControlType=pkt[2].routineControlType, routineIdentifier=pkt[2].routineIdentifier))
+        else:
+            # 返回0x12 ROOR
+            return self.mk_nr(pkt, 0x31)
+
+    def request_download(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        # 如果没有进入安全访问, 或者进入了安全访问但会话过期了
+        if session.get("sa_type", -1) == -1 or session.get("session_deadline", -1) < time.time():
+            # 返回 0x33 SecurityAccess Denied
+            return self.mk_nr(pkt, 0x33)
+
+        # 检查数据格式是否为无加密无压缩
+        if pkt[2].dataFormatIdentifier == 0:
+            # 检查长度和地址的长度是否为4字节
+            if pkt[2].memorySizeLen != 4 or pkt[2].memoryAddressLen != 4:
+                # 返回0x22 ConditionNotCorrect
+                return self.mk_nr(pkt, 0x22)
+            
+            # 要写入的目标内存地址与长度
+            addr = pkt[2].memoryAddress4
+            size = pkt[2].memorySize4
+
+            # 检查目标内存是否在flash_mem范围内
+            if addr + size >= len(self.flash_mem):
+                # 不在返回0x31 RequestOutOfRange
+                return self.mk_nr(pkt, 0x31)
+
+            buf = self.flash_mem[addr : addr + size]
+            # 如果全为\x00, 说明已经被擦除过了, 可以写入
+            if all(b == 0 for b in buf):
+                # 在当前会话中记录要下载的地址与长度
+                session["request_addr"] = addr
+                session["request_cur"] = addr
+                session["request_size"] = size
+                session["request_seq"] = 0
+                session["request"] = "download"
+                # 最大Block长度
+                return self.mk_pr(pkt, uds.UDS_RDPR(memorySizeLen=4) / int.to_bytes(self.flash_max_blocklen, byteorder="big", length=4))
+            else:
+                # 否则, 说明这段内存还没有被擦除, 返回0x70
+                return self.mk_nr(pkt, 0x70)
+
+        else:
+            # 否则, 返回0x22 ConditionNotCorrect
+            return self.mk_nr(pkt, 0x22)
+
+    def request_upload(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        # 如果没有进入安全访问, 或者进入了安全访问但会话过期了
+        if session.get("sa_type", -1) == -1 or session.get("session_deadline", -1) < time.time():
+            # 返回 0x33 SecurityAccess Denied
+            return self.mk_nr(pkt, 0x33)
+
+        # 检查数据格式是否为无加密无压缩
+        if pkt[2].dataFormatIdentifier == 0:
+            # 检查长度和地址的长度是否为4字节
+            if pkt[2].memorySizeLen != 4 or pkt[2].memoryAddressLen != 4:
+                # 返回0x22 ConditionNotCorrect
+                return self.mk_nr(pkt, 0x22)
+            
+            # 要读取的目标内存地址与长度
+            addr = pkt[2].memoryAddress4
+            size = pkt[2].memorySize4
+
+            # 检查目标内存是否在flash_mem范围内
+            if addr + size >= len(self.flash_mem):
+                # 不在返回0x31 RequestOutOfRange
+                return self.mk_nr(pkt, 0x31)
+
+            # 在当前会话中记录要下载的地址与长度
+            session["request_addr"] = addr
+            session["request_cur"] = addr
+            session["request_size"] = size
+            session["request_seq"] = 0
+            session["request"] = "upload"
+            # 最大Block长度
+            return self.mk_pr(pkt, uds.UDS_RUPR(memorySizeLen=4) / int.to_bytes(self.flash_max_blocklen, byteorder="big", length=4))
+
+        else:
+            # 否则, 返回0x22 ConditionNotCorrect
+            return self.mk_nr(pkt, 0x22)
+    
+    def transfer_exit(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        # 清空request请求记录信息
+        session["request"] = ""
+        resp = self.mk_pr(pkt, uds.UDS_RTEPR())
+        return resp
+
+    def transfer_data(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        # 如果没有进入安全访问, 或者进入了安全访问但会话过期了
+        if session.get("sa_type", -1) == -1 or session.get("session_deadline", -1) < time.time():
+            # 返回 0x33 SecurityAccess Denied
+            return self.mk_nr(pkt, 0x33)
+        
+        if session.get("request", "") not in ["download", "upload"]:
+            # 还没有请求下载或者上传, 返回0x70 uploadDownloadNotAccepted
+            return self.mk_nr(pkt, 0x70)
+        
+        block = pkt.transferRequestParameterRecord
+        # 检查block长度是否超过最大长度
+        if len(block) > self.flash_max_blocklen:
+            # 返回0x31 Request out of range
+            return self.mk_nr(pkt, 0x31)
+
+        if session["request"] == "download":
+            seq = session["request_seq"]
+            seq += 1
+            seq %= 0xFF
+            # 检查 block序号是否连续
+            if seq == pkt[2].blockSequenceCounter:
+                begin_addr = session["request_cur"]
+                # 检查是否超过写入范围
+                if begin_addr + len(block) - session["request_addr"] > session["request_size"]:
+                    # 返回0x31 roor
+                    return self.mk_nr(pkt, 0x31)
+                
+                # 写入内存
+                self.flash_mem = self.flash_mem[ : begin_addr] + block + self.flash_mem[begin_addr + len(block) : ]
+
+                # 递增当前写入指针
+                session["request_cur"] += len(block)
+
+                # 更新block序号
+                session["request_seq"] = seq
+
+                return self.mk_pr(pkt, uds.UDS_TDPR(blockSequenceCounter=seq))
+            else:
+                # 返回0x24 request sequence error
+                return self.mk_nr(pkt, 0x24)
+        else:
+            seq = session["request_seq"]
+            seq += 1
+            seq %= 0xFF
+            # 检查 block序号是否连续
+            if seq == pkt[2].blockSequenceCounter:
+                begin_addr = session["request_cur"]
+                if begin_addr >= session["request_addr"] + session["request_size"]:
+                    # 如果读取超过范围了, 那么返回
+                    return self.mk_nr(pkt, 0x31)
+                
+                block = self.flash_mem[begin_addr : min(begin_addr + self.flash_max_blocklen, len(self.flash_mem))]
+                session["request_seq"] = seq
+                session["request_cur"] += len(block)
+
+                return self.mk_pr(pkt, uds.UDS_TDPR(blockSequenceCounter=pkt[2].blockSequenceCounter,
+                                                    transferResponseParameterRecord=block))
+            else:
+                # 返回0x24 request sequence error
+                return self.mk_nr(pkt, 0x24)
 
     def tester_present(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         sf = pkt[2].subFunction
@@ -178,7 +380,7 @@ class DoIPNode:
         if session.get("sa_type", -1) != -1 and session.get("session_deadline", 0) >= time.time():
             # 只有成功通过安全访问并且安全访问会话没有过期才有权限写入
             did = pkt[2].dataIdentifier
-            raw = pkt[3]
+            raw = pkt[3].original
             data[did] = raw
             resp = self.mk_pr(pkt, uds.UDS_WDBIPR(dataIdentifier=did))
         else:
@@ -317,10 +519,15 @@ class DoIPGateway:
             node = self.nodes[ta]
             node: DoIPNode
             # DoIP -> UDS -> UDS服务, 因此取第2层
-            uds_clz = pkt.layers()[2]
-            if uds_clz in node.uds_handler.keys():
+            if len(pkt.layers()) >= 3:
+                uds_clz = pkt.layers()[2]
+                handler = node.uds_handler.get(uds_clz, None)
+            else:
+                service_id = pkt[1].service
+                handler = node.uds_handler.get(service_id, None)
+            
+            if handler is not None:
                 # 如果存在处理该UDS服务的handler
-                handler = node.uds_handler[uds_clz]
                 resp = handler(pkt, session[ta])
             else:
                 # 如果不存在处理该UDS服务的handler
