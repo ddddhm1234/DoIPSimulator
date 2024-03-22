@@ -88,8 +88,6 @@ class DoIPNode:
             del self.uds_handler[uds_service]
 
     def routing_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
-        sa = pkt.source_address
-        ta = pkt.target_address
         sf = pkt[2].subFunction
 
     def tester_present(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
@@ -128,8 +126,8 @@ class DoIPNode:
     def security_access(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         sat = pkt.securityAccessType
 
-        calc_key = session["key_algorithm"]
-        pincode = session["pincode"]
+        calc_key = self.key_algorithm
+        pincode = self.pincode
 
         if session.get("session_type", 0) != 3 or session.get("session_deadline", 0) < time.time():
             # 如果当前未进入扩展会话或扩展会话已经过期, 返回0x7F serviceNotSupportedInActiveSession
@@ -139,7 +137,7 @@ class DoIPNode:
         if sat % 2 == 1:
             # 如果是请求种子
             # 产生随机数种子
-            session["seed"] = random.randbytes(session["seed_len"])
+            session["seed"] = random.randbytes(self.seed_len)
 
             # 返回种子
 
@@ -169,7 +167,7 @@ class DoIPNode:
 
     def write_did(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         # 对$2e服务的封装, WriteDataByIdentifier
-        data = session["data"]
+        data = self.data
         if session.get("sa_type", -1) != -1 and session.get("session_deadline", 0) >= time.time():
             # 只有成功通过安全访问并且安全访问会话没有过期才有权限写入
             did = pkt[2].dataIdentifier
@@ -184,7 +182,7 @@ class DoIPNode:
 
     def read_did(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         # 对$22服务的封装, ReadDataByIdentifier
-        data = session["data"]
+        data = self.data
         dids = pkt.identifiers
 
         if len(dids) > 0:
@@ -253,10 +251,7 @@ class DoIPGateway:
                 session = {}
                 # 初始化当前连接与各个节点的session
                 for node_addr, node in self.nodes.items():
-                    session[node_addr] = {"data": node.data,
-                                          "key_algorithm": node.key_algorithm,
-                                          "pincode": node.pincode,
-                                          "seed_len": node.seed_len}
+                    session[node_addr] = {}
 
                 while not self.stop_flag:
                     try:
