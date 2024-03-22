@@ -21,11 +21,11 @@ class DoIPNode:
         sa = pkt.source_address
         ta = pkt.target_address
         resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                    requestServiceId=pkt[1].service,
-                    negativeResponseCode=nr_code
-                )
+            requestServiceId=pkt[1].service,
+            negativeResponseCode=nr_code
+        )
         return resp
-    
+
     @staticmethod
     def mk_pr(pkt: doip.DoIP, pr_payload) -> doip.DoIP:
         """
@@ -34,7 +34,8 @@ class DoIPNode:
         """
         sa = pkt.source_address
         ta = pkt.target_address
-        resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / pr_payload
+        resp = doip.DoIP(payload_type=0x8001, source_address=ta,
+                         target_address=sa) / uds.UDS() / pr_payload
         return resp
 
     @staticmethod
@@ -90,8 +91,6 @@ class DoIPNode:
         sa = pkt.source_address
         ta = pkt.target_address
         sf = pkt[2].subFunction
-        
-        
 
     def tester_present(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         sf = pkt[2].subFunction
@@ -143,7 +142,7 @@ class DoIPNode:
             session["seed"] = random.randbytes(session["seed_len"])
 
             # 返回种子
-            
+
             resp = self.mk_pr(pkt, uds.UDS_SAPR(
                 securityAccessType=pkt[2].securityAccessType,
                 securitySeed=session["seed"]
@@ -196,7 +195,8 @@ class DoIPNode:
             return resp
 
         if did in data.keys():
-            resp = self.mk_pr(pkt, uds.UDS_RDBIPR(dataIdentifier=did) / data[did])
+            resp = self.mk_pr(pkt, uds.UDS_RDBIPR(
+                dataIdentifier=did) / data[did])
         else:
             # 如果did不在data中, 返回 RequestOutOfRange
             resp = self.mk_nr(pkt, 0x31)
