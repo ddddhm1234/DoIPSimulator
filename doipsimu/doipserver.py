@@ -108,16 +108,28 @@ class DoIPNode:
         return resp
 
     def control_dtcs(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
-        # 一直返回PositiveResponse
-        resp = self.mk_pr(pkt, uds.UDS_CDTCSPR(pkt[2].DTCSettingType))
-        return resp
+        # 如果当前进入了扩展会话且没有过期
+        if session.get("session_type", -1) != -1 and session.get("session_deadline", -1) > time.time():
+            resp = self.mk_pr(pkt, uds.UDS_CDTCSPR(pkt[2].DTCSettingType))
+            return resp
+        else:
+            # 没有进入扩展返回, 返回0x7F ServiceNotSupportedInActiveSession
+            resp = self.mk_nr(pkt, 0x7F)
+            return resp
 
     def comm_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
-        # 一直返回PositiveResponse
+        if session.get("session_type", -1) == -1 or session.get("session_deadline", -1) <= time.time():
+            # 没有进入扩展返回, 返回0x7F ServiceNotSupportedInActiveSession
+            return self.mk_nr(pkt, 0x7F)
+        
         resp = self.mk_pr(pkt, uds.UDS_CCPR(controlType=pkt[2].controlType))
         return resp
 
     def routing_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        if session.get("session_type", -1) == -1 or session.get("session_deadline", -1) <= time.time():
+            # 没有进入扩展返回, 返回0x7F ServiceNotSupportedInActiveSession
+            return self.mk_nr(pkt, 0x7F)
+
         rid = pkt[2].routineIdentifier
         rct = pkt[2].routineControlType
 
@@ -156,6 +168,10 @@ class DoIPNode:
             return self.mk_nr(pkt, 0x31)
 
     def request_download(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        if session.get("session_type", -1) != 2 or session.get("session_deadline", -1) <= time.time():
+            # 刷写模式只能在02编程会话中执行, 返回0x7F ServiceNotSupportedInActiveSession
+            return self.mk_nr(pkt, 0x7F)
+
         # 如果没有进入安全访问, 或者进入了安全访问但会话过期了
         if session.get("sa_type", -1) == -1 or session.get("session_deadline", -1) < time.time():
             # 返回 0x33 SecurityAccess Denied
@@ -197,6 +213,10 @@ class DoIPNode:
             return self.mk_nr(pkt, 0x22)
 
     def request_upload(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        if session.get("session_type", -1) != 2 or session.get("session_deadline", -1) <= time.time():
+            # 刷写模式只能在02编程会话中执行, 返回0x7F ServiceNotSupportedInActiveSession
+            return self.mk_nr(pkt, 0x7F)
+
         # 如果没有进入安全访问, 或者进入了安全访问但会话过期了
         if session.get("sa_type", -1) == -1 or session.get("session_deadline", -1) < time.time():
             # 返回 0x33 SecurityAccess Denied
@@ -338,7 +358,7 @@ class DoIPNode:
         calc_key = self.key_algorithm
         pincode = self.pincode
 
-        if session.get("session_type", 0) != 3 or session.get("session_deadline", 0) < time.time():
+        if session.get("session_type", -1) == -1 or session.get("session_deadline", 0) < time.time():
             # 如果当前未进入扩展会话或扩展会话已经过期, 返回0x7F serviceNotSupportedInActiveSession
             resp = self.mk_nr(pkt, 0x7F)
             return resp
