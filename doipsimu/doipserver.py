@@ -14,6 +14,30 @@ class DoIPNode:
     DoIP节点
     """
     @staticmethod
+    def mk_nr(pkt: doip.DoIP, nr_code: int) -> doip.DoIP:
+        """
+        根据doip数据包产生NegativeRespone响应
+        """
+        sa = pkt.source_address
+        ta = pkt.target_address
+        resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
+                    requestServiceId=pkt[1].service,
+                    negativeResponseCode=nr_code
+                )
+        return resp
+    
+    @staticmethod
+    def mk_pr(pkt: doip.DoIP, pr_payload) -> doip.DoIP:
+        """
+        根据doip数据包产生PositiveRespone响应,
+        pr_payload需要根据不同的UDS Service产生, 由用户传入
+        """
+        sa = pkt.source_address
+        ta = pkt.target_address
+        resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / pr_payload
+        return resp
+
+    @staticmethod
     def calc_key(seed: bytes, pincode: bytes) -> bytes:
         key = []
         for i in range(4):
@@ -62,40 +86,33 @@ class DoIPNode:
         if uds_service in self.uds_handler.keys():
             del self.uds_handler[uds_service]
 
-    def tester_present(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+    def routing_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         sa = pkt.source_address
         ta = pkt.target_address
+        sf = pkt[2].subFunction
+        
+        
+
+    def tester_present(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         sf = pkt[2].subFunction
         if sf == 0x80:
             if "session_type" in session.keys():
                 if session["session_deadline"] < time.time():
                     # 如果当前会话已经结束, 返回0x7E subFunctionNotSupportedInActiveSession
-                    resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                        requestServiceId=pkt[1].service,
-                        negativeResponseCode=0x7E
-                    )
+                    resp = self.mk_nr(pkt, 0x7E)
                 else:
                     # 延长当前会话1s
                     session["session_deadline"] = time.time() + 1
-                    resp = doip.DoIP(payload_type=0x8001, source_address=ta,
-                                     target_address=sa) / uds.UDS() / uds.UDS_TPPR()
+                    resp = self.mk_pr(pkt, uds.UDS_TPPR())
             else:
                 # 如果当前尚未进入扩展会话, 返回0x12 subFunctionNotSupported
-                resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                    requestServiceId=pkt[1].service,
-                    negativeResponseCode=0x12
-                )
+                resp = self.mk_nr(pkt, 0x12)
         else:
-            resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                requestServiceId=pkt[1].service,
-                negativeResponseCode=0x7E
-            )
+            resp = self.mk_nr(pkt, 0x7E)
 
         return resp
 
     def diagnostic_session_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
-        sa = pkt.source_address
-        ta = pkt.target_address
         # 扩展会话类型
         stype = pkt[2].diagnosticSessionType
 
@@ -104,14 +121,12 @@ class DoIPNode:
         # 当前扩展会话结束时间, 发送TP可以延长扩展会话时间
         session["session_deadline"] = time.time() + 3
 
-        resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_DSCPR(
+        resp = self.mk_pr(pkt, uds.UDS_DSCPR(
             diagnosticSessionType=pkt[2].diagnosticSessionType
-        )
+        ))
         return resp
 
     def security_access(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
-        sa = pkt.source_address
-        ta = pkt.target_address
         sat = pkt.securityAccessType
 
         calc_key = session["key_algorithm"]
@@ -119,10 +134,7 @@ class DoIPNode:
 
         if session.get("session_type", 0) != 3 or session.get("session_deadline", 0) < time.time():
             # 如果当前未进入扩展会话或扩展会话已经过期, 返回0x7F serviceNotSupportedInActiveSession
-            resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                requestServiceId=pkt[1].service,
-                negativeResponseCode=0x7F
-            )
+            resp = self.mk_nr(pkt, 0x7F)
             return resp
 
         if sat % 2 == 1:
@@ -130,95 +142,64 @@ class DoIPNode:
             # 产生随机数种子
             session["seed"] = random.randbytes(session["seed_len"])
 
-            # 递增请求次数
-            session["request_times"] = session.get("request_times", 0) + 1
-            if session.get("request_times", 0) > 3:
-                # 如果请求次数超过3次, 返回 UDS_NR, 错误码为0x36, 超过最大请求限制
-                resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                    requestServiceId=pkt[1].service,
-                    negativeResponseCode=0x36
-                )
-
-                return resp
-
             # 返回种子
-            resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_SAPR(
+            
+            resp = self.mk_pr(pkt, uds.UDS_SAPR(
                 securityAccessType=pkt[2].securityAccessType,
                 securitySeed=session["seed"]
-            )
+            ))
         else:
             # 如果是发送key
             if "seed" not in session.keys():
                 # 如果seed字段不在session上下文中, 说明没有请求种子就发送key了, 返回0x35 invalidkey
-                resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                    requestServiceId=pkt[1].service,
-                    negativeResponseCode=0x33
-                )
+                resp = self.mk_nr(pkt, 0x35)
             else:
                 key = calc_key(session["seed"], pincode)
                 if key == pkt[2].securityKey:
                     # 如果key正确, 成功进入27服务
-                    resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_SAPR(
+                    resp = self.mk_pr(pkt, uds.UDS_SAPR(
                         securityAccessType=pkt[2].securityAccessType
-                    )
+                    ))
                     # 记录成功通过安全访问
                     session["sa_type"] = pkt[2].securityAccessType
                 else:
                     # 如果key不正确, 返回0x35 invalidkey
-                    resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                        requestServiceId=pkt[1].service,
-                        negativeResponseCode=0x35
-                    )
+                    resp = self.mk_nr(pkt, 0x35)
 
         return resp
 
     def write_did(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         # 对$2e服务的封装, WriteDataByIdentifier
-        sa = pkt.source_address
-        ta = pkt.target_address
         data = session["data"]
         if session.get("sa_type", -1) != -1 and session.get("session_deadline", 0) >= time.time():
             # 只有成功通过安全访问并且安全访问会话没有过期才有权限写入
             did = pkt[2].dataIdentifier
             raw = pkt[3]
             data[did] = raw
-            resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_WDBIPR(
-                dataIdentifier=did
-            )
+            resp = self.mk_pr(pkt, uds.UDS_WDBIPR(dataIdentifier=did))
         else:
             # 否则, 返回 0x7F ServiceNotSupportedInActiveSession
-            resp = doip.DoIP(payload_type=0x8001, source_address=ta, target_address=sa) / uds.UDS() / uds.UDS_NR(
-                requestServiceId=pkt[1].service,
-                negativeResponseCode=0x7F
-            )
+            resp = self.mk_nr(pkt, 0x7F)
 
         return resp
 
     def read_did(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         # 对$22服务的封装, ReadDataByIdentifier
         data = session["data"]
-
-        sa = pkt.source_address
-        ta = pkt.target_address
         dids = pkt.identifiers
 
         if len(dids) > 0:
             did = dids[0]
         else:
             # 如果payload中没有请求读取的did, 返回0x13 incorrectMessageLengthOrInvalidFormat
-            resp = doip.DoIP(payload_type=0x8001, target_address=sa, source_address=ta) / uds.UDS() / uds.UDS_NR(negativeResponseCode=0x13,
-                                                                                                                 requestServiceId=pkt[1].service)
+            resp = self.mk_nr(pkt, 0x13)
             return resp
 
         if did in data.keys():
-            resp = doip.DoIP(payload_type=0x8001, target_address=sa, source_address=ta) / uds.UDS() / uds.UDS_RDBIPR(
-                dataIdentifier=did
-            ) / data[did]
+            resp = self.mk_pr(pkt, uds.UDS_RDBIPR(dataIdentifier=did) / data[did])
         else:
             # 如果did不在data中, 返回 RequestOutOfRange
-            resp = doip.DoIP(payload_type=0x8001, target_address=sa, source_address=ta) / uds.UDS() / uds.UDS_NR(requestServiceId=pkt[1].service,
-                                                                                                                 negativeResponseCode=0x31)
-
+            resp = self.mk_nr(pkt, 0x31)
         return resp
 
 
