@@ -80,12 +80,19 @@ class DoIPNode:
         self.add_uds_handler(uds.UDS_TP, self.tester_present)
         self.add_uds_handler(uds.UDS_WDBI, self.write_did)
 
+        self.add_uds_handler(uds.UDS_CC, self.comm_control)
+
     def add_uds_handler(self, uds_service: uds.Packet, handler: Callable):
         self.uds_handler[uds_service] = handler
 
     def remove_uds_handler(self, uds_service: uds.Packet):
         if uds_service in self.uds_handler.keys():
             del self.uds_handler[uds_service]
+
+    def comm_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
+        # 一直返回PositiveRespone
+        resp = self.mk_pr(pkt, uds.UDS_CCPR(controlType=pkt[2].controlType))
+        return resp
 
     def routing_control(self, pkt: doip.DoIP, session: Dict) -> doip.DoIP:
         sf = pkt[2].subFunction
