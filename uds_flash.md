@@ -272,3 +272,12 @@ gw.stop()
 ```
 
 ![](img/image5.png)
+
+## Reference
+[1] https://piembsystech.com/application-of-uds-flash-programming/
+
+[2]  https://piembsystech.com/routineidentifier-rid-in-uds-protocol/
+
+[3]  https://piembsystech.com/routinecontrol-0x31-service-uds-protocol/
+
+[4]  https://embetronicx.com/tutorials/automotive/uds-protocol/upload-download-function-unit-in-uds-protocol/
