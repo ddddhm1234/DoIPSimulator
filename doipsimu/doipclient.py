@@ -1,6 +1,6 @@
 import socket
 import time
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Optional
 import scapy.contrib.automotive.doip
 from scapy.supersocket import StreamSocket
 from scapy.contrib.automotive import doip
@@ -172,7 +172,7 @@ class UdsOverDoIP:
 
     def open_extended_session(
         self, diagnostic_session_type: int = 3
-    ) -> None | int:
+    ) -> Optional[int]:
         """
         进入并维持扩展会话
         :param diagnostic_session_type: 诊断会话类型
@@ -228,7 +228,7 @@ class UdsOverDoIP:
         self._extended = False
         self._daemon.join()
 
-    def request_seed(self, security_access_type: int = 0x05) -> Tuple[bytes, int] | None:
+    def request_seed(self, security_access_type: int = 0x05) -> Optional[Tuple[bytes, int]]:
         """$27服务封装, 安全访问, 请求种子
 
         :param security_access_type: 安全访问类型, 该参数应该与调用send_key方法时的参数相同
@@ -261,7 +261,7 @@ class UdsOverDoIP:
         
         return None
 
-    def send_key(self, security_access_type: int = 0x05, key: bytes = b"") -> int | None:
+    def send_key(self, security_access_type: int = 0x05, key: bytes = b"") -> Optional[int]:
         """$27服务封装, 安全访问, 发送密钥
 
         :param security_access_type: 安全访问类型, 该参数应该与调用send_key方法时的参数相同
@@ -293,7 +293,7 @@ class UdsOverDoIP:
         return None
 
 
-    def read_did(self, did: int = 0xF190) -> Tuple[bytes, int] | None:
+    def read_did(self, did: int = 0xF190) -> Optional[Tuple[bytes, int]]:
         """$22服务的封装, ReadDataByIdentifier
 
         :param did: did
@@ -329,7 +329,7 @@ class UdsOverDoIP:
 
         return None
 
-    def reset(self, reset_type: int = 0x1) -> int | None:
+    def reset(self, reset_type: int = 0x1) -> Optional[int]:
         """$11服务封装, ECUReset
 
         :param reset_type: 重置类型, defaults to 0x1. 0x1是硬重置, 0x3是软重置
@@ -361,7 +361,7 @@ class UdsOverDoIP:
                 return resp.negativeResponseCode
             
 
-    def write_did(self, did: int = 0xF190, payload: bytes = b"") -> int | None:
+    def write_did(self, did: int = 0xF190, payload: bytes = b"") -> Optional[int]:
         """$2e服务的封装, WriteDataByIdentifier
 
         :param did: did
@@ -401,7 +401,7 @@ class UdsOverDoIP:
         return None
 
     
-    def routing_control(self, rid: int, rc_type: int = 0x1, payload: bytes = b"") -> int | None:
+    def routing_control(self, rid: int, rc_type: int = 0x1, payload: bytes = b"") -> Optional[int]:
         """$31服务封装, RoutingControl
 
         :param rid: routing identifier
@@ -430,7 +430,7 @@ class UdsOverDoIP:
         
         return None
     
-    def erase_memory(self, addr: int, size: int, addr_len: int = 4, size_len: int = 4) -> int | None:
+    def erase_memory(self, addr: int, size: int, addr_len: int = 4, size_len: int = 4) -> Optional[int]:
         """擦除内存, 通过0xFF00 Routing完成
         
         :param addr: 内存地址
