@@ -247,7 +247,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -278,7 +278,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -313,7 +313,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -349,7 +349,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -383,7 +383,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -418,7 +418,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
             if resp is None:
                 continue
@@ -472,7 +472,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -500,7 +500,7 @@ class UdsOverDoIP:
                 try:
                     resp = self.socket.recv()
                 except TimeoutError:
-                    pass
+                    continue
                 
                 if resp is None:
                     continue
@@ -528,7 +528,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -572,7 +572,7 @@ class UdsOverDoIP:
             try:
                 resp = self.socket.recv()
             except TimeoutError:
-                pass
+                continue
             
 
             if resp is None:
@@ -603,7 +603,7 @@ class UdsOverDoIP:
                 try:
                     resp = self.socket.recv()
                 except TimeoutError:
-                    pass
+                    continue
                 
 
                 if resp is None:
