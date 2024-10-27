@@ -3,7 +3,7 @@
 
 ## Dependency
 ```
-pip install scapy
+pip install scapy==2.5.0
 ```
 
 ## Document
